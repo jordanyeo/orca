@@ -1452,6 +1452,76 @@ describe('shared agent-hook-listener', () => {
     expect(stopped?.providerSession).toMatchObject({ key: 'session_id', id: 'session_abc' })
   })
 
+  // Why: Kimi shares Claude-compatible compact/harness hooks; cover the same sticky-working
+  // guards so a Kimi-only regression cannot slip past the Claude-only tests (issue #11352).
+  it('ignores harness-injected UserPromptSubmit for Kimi', () => {
+    normalizeHookPayload(
+      state,
+      'kimi',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'UserPromptSubmit',
+          prompt: [{ type: 'text', text: 'list the files here' }]
+        }
+      },
+      'production'
+    )
+    const harness = normalizeHookPayload(
+      state,
+      'kimi',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'UserPromptSubmit',
+          prompt:
+            'This session is being continued from a previous conversation that ran out of context.'
+        }
+      },
+      'production'
+    )
+    expect(harness).toBeNull()
+    const tool = normalizeHookPayload(
+      state,
+      'kimi',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' }
+        }
+      },
+      'production'
+    )
+    expect(tool).not.toBeNull()
+    expect(tool!.payload.state).toBe('working')
+    expect(tool!.payload.prompt).toBe('list the files here')
+    expect(tool!.payload.agentType).toBe('kimi')
+  })
+
+  it('maps Kimi PreCompact to working and PostCompact to done (issue #11352)', () => {
+    const pre = normalizeHookPayload(
+      state,
+      'kimi',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'PreCompact', trigger: 'manual' } },
+      'production'
+    )
+    expect(pre).not.toBeNull()
+    expect(pre!.payload.state).toBe('working')
+    expect(pre!.payload.agentType).toBe('kimi')
+
+    const post = normalizeHookPayload(
+      state,
+      'kimi',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
+      'production'
+    )
+    expect(post).not.toBeNull()
+    expect(post!.payload.state).toBe('done')
+    expect(post!.payload.agentType).toBe('kimi')
+  })
+
   it('normalizes MiMo Code OpenCode-compatible lifecycle events as mimo-code status', () => {
     const message = normalizeHookPayload(
       state,
