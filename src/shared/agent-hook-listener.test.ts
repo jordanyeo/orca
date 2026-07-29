@@ -1563,15 +1563,16 @@ describe('shared agent-hook-listener', () => {
     expect(event).toBeNull()
   })
 
-  it('keeps the cached prompt when a harness-injected turn fires UserPromptSubmit', () => {
+  it('ignores harness-injected UserPromptSubmit so it cannot mint a sticky working row', () => {
     normalizeHookPayload(
       state,
       'claude',
       { paneKey: PANE_KEY, payload: { hook_event_name: 'UserPromptSubmit', prompt: 'fix login' } },
       'production'
     )
-    // Why: the harness injects background task notifications as user turns;
-    // they must not replace the user's real prompt in status labels.
+    // Why: harness injects task notifications / compact summaries as user turns that fire
+    // UserPromptSubmit without a matching Stop. Emitting working here left worktrees stuck
+    // on the spinner after /compact (issue #11352). Ignore machinery; keep prior status.
     const event = normalizeHookPayload(
       state,
       'claude',
@@ -1584,13 +1585,27 @@ describe('shared agent-hook-listener', () => {
       },
       'production'
     )
-    expect(event).not.toBeNull()
-    expect(event!.payload.state).toBe('working')
-    expect(event!.payload.prompt).toBe('fix login')
-    expect(event!.hasExplicitPrompt).toBe(false)
+    expect(event).toBeNull()
+    // A later real tool event must still show the cached user prompt, not the harness tags.
+    const toolEvent = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' }
+        }
+      },
+      'production'
+    )
+    expect(toolEvent).not.toBeNull()
+    expect(toolEvent!.payload.state).toBe('working')
+    expect(toolEvent!.payload.prompt).toBe('fix login')
   })
 
-  it('resolves an empty prompt for a harness-injected turn with nothing cached', () => {
+  it('ignores a harness-injected UserPromptSubmit with nothing cached', () => {
     const event = normalizeHookPayload(
       state,
       'claude',
@@ -1603,9 +1618,66 @@ describe('shared agent-hook-listener', () => {
       },
       'production'
     )
-    expect(event).not.toBeNull()
-    expect(event!.payload.prompt).toBe('')
-    expect(event!.hasExplicitPrompt).toBe(false)
+    expect(event).toBeNull()
+  })
+
+  it('does not leave working after a compact-summary UserPromptSubmit (issue #11352)', () => {
+    // Live repro: after /compact Claude injects "This session is being continued…" with no Stop.
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'UserPromptSubmit',
+          prompt:
+            'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.'
+        }
+      },
+      'production'
+    )
+    expect(event).toBeNull()
+  })
+
+  it('maps Claude PreCompact to working and PostCompact to done (issue #11352)', () => {
+    const pre = normalizeHookPayload(
+      state,
+      'claude',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'PreCompact', trigger: 'manual' } },
+      'production'
+    )
+    expect(pre).not.toBeNull()
+    expect(pre!.payload.state).toBe('working')
+    expect(pre!.payload.agentType).toBe('claude')
+
+    const post = normalizeHookPayload(
+      state,
+      'claude',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
+      'production'
+    )
+    expect(post).not.toBeNull()
+    expect(post!.payload.state).toBe('done')
+    expect(post!.payload.agentType).toBe('claude')
+  })
+
+  it('clears a sticky working row when Claude PostCompact fires after a real turn', () => {
+    normalizeHookPayload(
+      state,
+      'claude',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'UserPromptSubmit', prompt: '/compact' } },
+      'production'
+    )
+    const post = normalizeHookPayload(
+      state,
+      'claude',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
+      'production'
+    )
+    expect(post).not.toBeNull()
+    expect(post!.payload.state).toBe('done')
+    // Why: slash-command prompt is a real user turn; keep it on the done row for history.
+    expect(post!.payload.prompt).toBe('/compact')
   })
 
   it('treats a custom-element paste as an explicit user turn, not machinery', () => {

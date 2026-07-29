@@ -2640,19 +2640,31 @@ function normalizeClaudeEvent(
   const sessionCronInventoryPresent = Array.isArray(sessionCrons)
   const hasActiveSessionCron = sessionCronInventoryPresent && sessionCrons.length > 0
 
+  // Why: harness-injected UserPromptSubmit (compact summary, task-notification envelopes,
+  // system-reminders, local-command machinery) is not a real user turn. Emitting `working`
+  // with no matching Stop left worktrees stuck on the spinner after /compact (issue #11352).
+  // Real tool activity still arrives as PreToolUse/PostToolUse; do not mint a working row
+  // from machinery alone. resolvePrompt already preserves the cached user prompt for labels.
+  if (eventName === 'UserPromptSubmit' && isKnownHarnessInjectedUserTurnText(promptText)) {
+    return null
+  }
+
   // Why: Claude's auto-allowed AskUserQuestion emits PreToolUse (not PermissionRequest; its Notification hook isn't registered) while blocked on a human answer.
   // Treat that PreToolUse as waiting so the sidebar shows amber attention, not a spinner that decays to grey. Mirrors normalizeKimiEvent.
   const isAskUserQuestion =
     eventName === 'PreToolUse' && isAskUserQuestionTool(readString(hookPayload, 'tool_name'))
+  // Why: /compact can take minutes and does not emit Stop. PreCompact marks the pane busy;
+  // PostCompact clears it so a finished compact cannot leave a sticky working spinner (#11352).
   const reportedStateName =
     eventName === 'UserPromptSubmit' ||
     eventName === 'PostToolUse' ||
     eventName === 'PostToolUseFailure' ||
+    eventName === 'PreCompact' ||
     (eventName === 'PreToolUse' && !isAskUserQuestion)
       ? 'working'
       : eventName === 'PermissionRequest' || isAskUserQuestion
         ? 'waiting'
-        : isTurnBoundary
+        : isTurnBoundary || eventName === 'PostCompact'
           ? 'done'
           : null
 
@@ -2863,6 +2875,12 @@ function normalizeKimiEvent(
   paneKey: string,
   hookPayload: Record<string, unknown>
 ): ParsedAgentStatusPayload | null {
+  // Why: Kimi shares Claude's harness-injected UserPromptSubmit shapes; same sticky-working
+  // risk after compact/local-command machinery (issue #11352).
+  if (eventName === 'UserPromptSubmit' && isKnownHarnessInjectedUserTurnText(promptText)) {
+    return null
+  }
+
   const toolName = readString(hookPayload, 'tool_name')
   const isUserInputTool = isKimiUserInputTool(toolName)
 
@@ -2871,12 +2889,13 @@ function normalizeKimiEvent(
     eventName === 'UserPromptSubmit' ||
     eventName === 'PostToolUse' ||
     eventName === 'PostToolUseFailure' ||
+    eventName === 'PreCompact' ||
     (eventName === 'PreToolUse' && !isUserInputTool)
   ) {
     stateName = 'working'
   } else if (eventName === 'PermissionRequest' || (eventName === 'PreToolUse' && isUserInputTool)) {
     stateName = 'waiting'
-  } else if (eventName === 'Stop' || eventName === 'StopFailure') {
+  } else if (eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'PostCompact') {
     stateName = 'done'
   }
 
