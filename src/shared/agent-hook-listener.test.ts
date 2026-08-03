@@ -1514,21 +1514,19 @@ describe('shared agent-hook-listener', () => {
     expect(tool!.payload.agentType).toBe('kimi')
   })
 
-  it('maps Kimi PreCompact to working and ignores uncorrelated PostCompact', () => {
+  it('ignores unproven Kimi compact lifecycle events', () => {
     const pre = normalizeAndAccept(state, 'kimi', {
       hook_event_name: 'PreCompact',
       trigger: 'manual'
     })
-    expect(pre).not.toBeNull()
-    expect(pre!.payload.state).toBe('working')
-    expect(pre!.payload.agentType).toBe('kimi')
-
     const post = normalizeAndAccept(state, 'kimi', {
       hook_event_name: 'PostCompact',
       trigger: 'manual'
     })
+
+    expect(pre).toBeNull()
     expect(post).toBeNull()
-    expect(state.lastStatusByPaneKey.get(PANE_KEY)).toBe(pre)
+    expect(state.lastStatusByPaneKey.has(PANE_KEY)).toBe(false)
   })
 
   it('normalizes MiMo Code OpenCode-compatible lifecycle events as mimo-code status', () => {
@@ -1642,16 +1640,13 @@ describe('shared agent-hook-listener', () => {
     expect(event).toBeNull()
   })
 
-  it('ignores harness-injected UserPromptSubmit so it cannot mint a sticky working row', () => {
+  it('resumes work for task notifications without replacing the cached prompt', () => {
     normalizeHookPayload(
       state,
       'claude',
       { paneKey: PANE_KEY, payload: { hook_event_name: 'UserPromptSubmit', prompt: 'fix login' } },
       'production'
     )
-    // Why: harness injects task notifications / compact summaries as user turns that fire
-    // UserPromptSubmit without a matching Stop. Emitting working here left worktrees stuck
-    // on the spinner after /compact (issue #11352). Ignore machinery; keep prior status.
     const event = normalizeHookPayload(
       state,
       'claude',
@@ -1664,27 +1659,13 @@ describe('shared agent-hook-listener', () => {
       },
       'production'
     )
-    expect(event).toBeNull()
-    // A later real tool event must still show the cached user prompt, not the harness tags.
-    const toolEvent = normalizeHookPayload(
-      state,
-      'claude',
-      {
-        paneKey: PANE_KEY,
-        payload: {
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Bash',
-          tool_input: { command: 'echo hi' }
-        }
-      },
-      'production'
-    )
-    expect(toolEvent).not.toBeNull()
-    expect(toolEvent!.payload.state).toBe('working')
-    expect(toolEvent!.payload.prompt).toBe('fix login')
+    expect(event).not.toBeNull()
+    expect(event!.payload.state).toBe('working')
+    expect(event!.payload.prompt).toBe('fix login')
+    expect(event!.hasExplicitPrompt).toBe(false)
   })
 
-  it('ignores a harness-injected UserPromptSubmit with nothing cached', () => {
+  it('emits a harness-injected UserPromptSubmit with an empty uncached prompt', () => {
     const event = normalizeHookPayload(
       state,
       'claude',
@@ -1697,7 +1678,10 @@ describe('shared agent-hook-listener', () => {
       },
       'production'
     )
-    expect(event).toBeNull()
+    expect(event).not.toBeNull()
+    expect(event!.payload.state).toBe('working')
+    expect(event!.payload.prompt).toBe('')
+    expect(event!.hasExplicitPrompt).toBe(false)
   })
 
   it('does not leave working after a compact-summary UserPromptSubmit (issue #11352)', () => {

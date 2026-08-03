@@ -60,7 +60,10 @@ import {
   type AgentProviderSessionMetadata
 } from './agent-session-resume'
 import { parsePaneKey } from './stable-pane-id'
-import { isKnownHarnessInjectedUserTurnText } from './harness-injected-user-turns'
+import {
+  isCompactContinuationUserTurnText,
+  isKnownHarnessInjectedUserTurnText
+} from './harness-injected-user-turns'
 import {
   buildGrokChatHistoryPathCandidates,
   findGrokChatHistoryBySessionId,
@@ -564,15 +567,12 @@ function stripGrokUserQueryWrapper(promptText: string): string {
   return text.trim()
 }
 
-// Why: harness-injected UserPromptSubmit (compact summary, task-notification envelopes,
-// system-reminders, local-command machinery) is not a real user turn. Emitting `working`
-// with no matching Stop left worktrees stuck on the spinner after /compact (issue #11352).
-// Shared by Claude and Kimi so the two Claude-compatible paths cannot drift on this bug class.
-function shouldIgnoreHarnessInjectedUserPromptSubmit(
+// Why: the post-compact continuation prompt has no matching Stop and would resurrect working.
+function shouldIgnoreCompactContinuationUserPromptSubmit(
   eventName: unknown,
   promptText: string
 ): boolean {
-  return eventName === 'UserPromptSubmit' && isKnownHarnessInjectedUserTurnText(promptText)
+  return eventName === 'UserPromptSubmit' && isCompactContinuationUserTurnText(promptText)
 }
 
 function resolvePrompt(
@@ -2711,9 +2711,7 @@ function normalizeClaudeEvent(
   const sessionCronInventoryPresent = Array.isArray(sessionCrons)
   const hasActiveSessionCron = sessionCronInventoryPresent && sessionCrons.length > 0
 
-  // Why: do not mint a working row from machinery alone; real tool activity still arrives as
-  // PreToolUse/PostToolUse. resolvePrompt already preserves the cached user prompt for labels.
-  if (shouldIgnoreHarnessInjectedUserPromptSubmit(eventName, promptText)) {
+  if (shouldIgnoreCompactContinuationUserPromptSubmit(eventName, promptText)) {
     return null
   }
 
@@ -2943,7 +2941,7 @@ function normalizeKimiEvent(
   paneKey: string,
   hookPayload: Record<string, unknown>
 ): ParsedAgentStatusPayload | null {
-  if (shouldIgnoreHarnessInjectedUserPromptSubmit(eventName, promptText)) {
+  if (shouldIgnoreCompactContinuationUserPromptSubmit(eventName, promptText)) {
     return null
   }
 
@@ -2955,13 +2953,12 @@ function normalizeKimiEvent(
     eventName === 'UserPromptSubmit' ||
     eventName === 'PostToolUse' ||
     eventName === 'PostToolUseFailure' ||
-    eventName === 'PreCompact' ||
     (eventName === 'PreToolUse' && !isUserInputTool)
   ) {
     stateName = 'working'
   } else if (eventName === 'PermissionRequest' || (eventName === 'PreToolUse' && isUserInputTool)) {
     stateName = 'waiting'
-  } else if (eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'PostCompact') {
+  } else if (eventName === 'Stop' || eventName === 'StopFailure') {
     stateName = 'done'
   }
 
@@ -4086,10 +4083,8 @@ export function normalizeHookPayload(
     hookPayloadRecord.trigger === 'manual'
       ? ('manual' as const)
       : undefined
-  if (source === 'kimi' && eventName === 'PostCompact') {
-    return null
-  }
-  if (source === 'claude' && eventName === 'PostCompact' && compactTrigger === undefined) {
+  const isCompactEvent = eventName === 'PreCompact' || eventName === 'PostCompact'
+  if (isCompactEvent && compactTrigger !== 'manual') {
     return null
   }
   const previousStatus = state.lastStatusByPaneKey.get(paneKey)

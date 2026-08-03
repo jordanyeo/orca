@@ -1913,10 +1913,11 @@ export class AgentHookServer {
     )
     const previousStatus = this.state.lastStatusByPaneKey.get(paneKey)
     if (hookEventName === 'PreCompact' || hookEventName === 'PostCompact') {
-      if (source === undefined || normalizedPayload.agentType !== source) {
-        return
-      }
-      if (hookEventName === 'PostCompact' && source !== 'claude') {
+      if (
+        source !== 'claude' ||
+        compactTrigger !== 'manual' ||
+        normalizedPayload.agentType !== source
+      ) {
         return
       }
       if (
@@ -1930,8 +1931,6 @@ export class AgentHookServer {
         return
       }
       if (
-        source === 'claude' &&
-        (hookEventName === 'PostCompact' || compactTrigger === 'manual') &&
         !canAcceptManualClaudeCompactTransition(previousStatus, {
           source,
           connectionId: trimmedConnectionId,

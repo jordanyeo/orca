@@ -222,7 +222,7 @@ describe('manual Claude compact hook stream', () => {
     })
   })
 
-  it('leaves automatic compact completion fail-closed', async () => {
+  it('ignores automatic compact hooks', async () => {
     const main = new AgentHookServer()
     const forwarded: AgentHookRelayEnvelope[] = []
     const endpointDir = mkdtempSync(join(tmpdir(), 'orca-auto-compact-relay-'))
@@ -246,17 +246,35 @@ describe('manual Claude compact hook stream', () => {
     await postHook(port, token, claudeHook('PreCompact', PROMPT_ID_1, { trigger: 'auto' }))
     await postHook(port, token, claudeHook('PostCompact', PROMPT_ID_1, { trigger: 'auto' }))
 
-    expect(forwarded.map((event) => event.hookEventName)).toEqual([
-      'UserPromptSubmit',
-      'PreCompact'
-    ])
+    expect(forwarded.map((event) => event.hookEventName)).toEqual(['UserPromptSubmit'])
     expect(main.getStatusSnapshot()[0]).toMatchObject({ state: 'working', agentType: 'claude' })
+  })
+
+  it('rejects unproven compact sources at the main relay boundary', () => {
+    const server = new AgentHookServer()
+    servers.push(server)
+    server.ingestRemote(
+      {
+        ...manualEnvelope('PreCompact', 'working'),
+        source: 'kimi',
+        payload: { state: 'working', prompt: '', agentType: 'kimi' }
+      },
+      'conn-kimi'
+    )
+    server.ingestRemote(
+      { ...manualEnvelope('PreCompact', 'working'), compactTrigger: undefined },
+      'conn-auto'
+    )
+
+    expect(server.getStatusSnapshot()).toEqual([])
+    expect(server._getStateForTests().lastStatusByPaneKey.size).toBe(0)
   })
 
   it('hydrates a manual PreCompact identity and accepts only its exact local completion', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'orca-compact-restore-'))
     temporaryPaths.push(userDataPath)
     const first = new AgentHookServer()
+    servers.push(first)
     await first.start({ env: 'production', userDataPath })
     const firstEnv = first.buildPtyEnv()
     await postHook(

@@ -11,8 +11,8 @@ import { makePaneKey } from './stable-pane-id'
 
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const PANE_KEY = makePaneKey('manual-compact-prompt', LEAF_ID)
-const PROMPT_ID_1 = '11111111-1111-4111-8111-111111111111'
-const PROMPT_ID_2 = '22222222-2222-4222-8222-222222222222'
+const PROMPT_ID_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+const PROMPT_ID_2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
 
 function accept(
   state: HookListenerState,
@@ -134,9 +134,9 @@ describe('manual compact prompt identity', () => {
     expect(state.lastStatusByPaneKey.get(PANE_KEY)?.hookEventName).toBe('PreCompact')
   })
 
-  it('ignores automatic and unproven Kimi completion', () => {
+  it('ignores automatic Claude and unproven Kimi compact events', () => {
     const state = createHookListenerState()
-    accept(state, 'claude', {
+    const current = accept(state, 'claude', {
       hook_event_name: 'UserPromptSubmit',
       prompt: 'continue the task',
       prompt_id: PROMPT_ID_1,
@@ -154,6 +154,12 @@ describe('manual compact prompt identity', () => {
       prompt_id: PROMPT_ID_1,
       session_id: 'session-a'
     })
+    const kimiPre = accept(state, 'kimi', {
+      hook_event_name: 'PreCompact',
+      trigger: 'manual',
+      prompt_id: PROMPT_ID_1,
+      session_id: 'session-a'
+    })
     const kimiPost = accept(state, 'kimi', {
       hook_event_name: 'PostCompact',
       trigger: 'manual',
@@ -161,10 +167,11 @@ describe('manual compact prompt identity', () => {
       session_id: 'session-a'
     })
 
-    expect(automaticPre).toMatchObject({ payload: { state: 'working' } })
+    expect(automaticPre).toBeNull()
     expect(automaticPost).toBeNull()
+    expect(kimiPre).toBeNull()
     expect(kimiPost).toBeNull()
-    expect(state.lastStatusByPaneKey.get(PANE_KEY)).toBe(automaticPre)
+    expect(state.lastStatusByPaneKey.get(PANE_KEY)).toBe(current)
   })
 
   it('does not allocate ownership for unaccepted untrusted pane keys', () => {
