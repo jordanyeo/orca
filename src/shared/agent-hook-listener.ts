@@ -55,6 +55,7 @@ import {
 import { ORCA_HOOK_PROTOCOL_VERSION } from './agent-hook-types'
 import { REMOTE_AGENT_HOOK_ENV, type AgentHookSource } from './agent-hook-relay'
 import {
+  agentProviderSessionsEqual,
   extractAgentProviderSession,
   type AgentProviderSessionMetadata
 } from './agent-session-resume'
@@ -102,6 +103,15 @@ function capOpenCodeHookText(text: string): string {
 
 /** Bound paneKey size (real keys are well under 200); caps per-pane caches against pathological input. Exported so non-HTTP ingest (`ingestRemote`) applies the same cap as defense-in-depth. */
 export const MAX_PANE_KEY_LEN = 200
+const CLAUDE_PROMPT_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+
+export function normalizeClaudePromptId(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const normalized = value.trim().toLowerCase()
+  return CLAUDE_PROMPT_ID_RE.test(normalized) ? normalized : undefined
+}
 
 /** Per-listener-instance caches needing per-PTY teardown; Orca's main process and the relay each get their own, never shared. */
 export type HookListenerState = {
@@ -298,6 +308,8 @@ export function warnOnHookEnvOrVersionMismatch(
 
 export type AgentHookEventPayload = {
   paneKey: string
+  /** Authenticated hook route that produced this event. */
+  source?: AgentHookSource
   /** Ephemeral Orca launch identity stamped into the PTY env for this process. */
   launchToken?: string
   tabId?: string
@@ -310,6 +322,10 @@ export type AgentHookEventPayload = {
   promptInteractionKey?: string
   /** Raw agent hook event name, used by main-process transition guards. */
   hookEventName?: string
+  /** Claude's provider-owned user-prompt UUID. */
+  providerPromptId?: string
+  /** Present only for correlated manual compact lifecycle events. */
+  compactTrigger?: 'manual'
   /** Claude tool-use identifier when the hook source exposes one. */
   toolUseId?: string
   /** Claude agent/subagent identifier when the hook source exposes one. */
@@ -325,6 +341,50 @@ export type AgentHookEventPayload = {
   /** Transport-only Claude background-work evidence used to reject false input-based interrupts. */
   claudeRunningNonAgentTask?: boolean
   payload: ParsedAgentStatusPayload
+}
+
+type ManualCompactIdentity = Pick<
+  AgentHookEventPayload,
+  | 'source'
+  | 'connectionId'
+  | 'hookEventName'
+  | 'providerPromptId'
+  | 'compactTrigger'
+  | 'providerSession'
+>
+
+export function canAcceptManualClaudeCompactTransition(
+  previous: AgentHookEventPayload | undefined,
+  incoming: ManualCompactIdentity,
+  options: { allowUnanchoredPreCompact?: boolean } = {}
+): boolean {
+  if (
+    incoming.source !== 'claude' ||
+    incoming.compactTrigger !== 'manual' ||
+    incoming.providerPromptId === undefined ||
+    (incoming.hookEventName !== 'PreCompact' && incoming.hookEventName !== 'PostCompact')
+  ) {
+    return false
+  }
+  if (incoming.hookEventName === 'PreCompact' && options.allowUnanchoredPreCompact) {
+    return true
+  }
+  if (
+    previous?.source !== 'claude' ||
+    previous.payload.agentType !== 'claude' ||
+    previous.connectionId !== incoming.connectionId ||
+    !agentProviderSessionsEqual('claude', previous.providerSession, incoming.providerSession)
+  ) {
+    return false
+  }
+  if (incoming.hookEventName === 'PostCompact') {
+    return (
+      previous.hookEventName === 'PreCompact' &&
+      previous.compactTrigger === 'manual' &&
+      previous.providerPromptId === incoming.providerPromptId
+    )
+  }
+  return previous.providerPromptId !== undefined
 }
 
 // ─── Body parsing ───────────────────────────────────────────────────
@@ -3963,7 +4023,8 @@ export function normalizeHookPayload(
   state: HookListenerState,
   source: AgentHookSource,
   body: unknown,
-  expectedEnv: string
+  expectedEnv: string,
+  options: { allowUnanchoredManualPreCompact?: boolean } = {}
 ): AgentHookEventPayload | null {
   if (typeof body !== 'object' || body === null) {
     return null
@@ -4012,6 +4073,53 @@ export function normalizeHookPayload(
     readFirstString(record, ['hook_event_name', 'hookEventName', 'hook_type', 'hookType']) ??
     hookPayloadRecord.hook_event_name ??
     hookPayloadRecord.hookEventName
+  // Why: Codex child hooks expose the child's session_id on the parent's pane.
+  const providerSession =
+    source === 'codex' && readString(hookPayloadRecord, 'agent_id')
+      ? null
+      : extractAgentProviderSession(source, hookPayloadRecord)
+  const providerPromptId =
+    source === 'claude' ? normalizeClaudePromptId(hookPayloadRecord.prompt_id) : undefined
+  const compactTrigger =
+    source === 'claude' &&
+    (eventName === 'PreCompact' || eventName === 'PostCompact') &&
+    hookPayloadRecord.trigger === 'manual'
+      ? ('manual' as const)
+      : undefined
+  if (source === 'kimi' && eventName === 'PostCompact') {
+    return null
+  }
+  if (source === 'claude' && eventName === 'PostCompact' && compactTrigger === undefined) {
+    return null
+  }
+  const previousStatus = state.lastStatusByPaneKey.get(paneKey)
+  if (
+    compactTrigger === 'manual' &&
+    !canAcceptManualClaudeCompactTransition(
+      previousStatus,
+      {
+        source,
+        connectionId: null,
+        hookEventName: typeof eventName === 'string' ? eventName : undefined,
+        providerPromptId,
+        compactTrigger,
+        providerSession: providerSession ?? undefined
+      },
+      {
+        allowUnanchoredPreCompact: options.allowUnanchoredManualPreCompact
+      }
+    )
+  ) {
+    return null
+  }
+  if (
+    eventName === 'PostCompact' &&
+    compactTrigger === 'manual' &&
+    previousStatus?.payload.prompt &&
+    !state.lastPromptByPaneKey.has(paneKey)
+  ) {
+    state.lastPromptByPaneKey.set(paneKey, previousStatus.payload.prompt)
+  }
   const extractedPrompt = extractPromptText(hookPayload as Record<string, unknown>)
   const promptText = extractedPrompt.text
   let resolvedPromptText = promptText
@@ -4133,12 +4241,6 @@ export function normalizeHookPayload(
   }
 
   // Why: connectionId is null here; ingestRemote stamps it from mux identity on receive. See docs/design/agent-status-over-ssh.md §5.
-  // Why: Codex child hooks expose the child's session_id on the parent's pane;
-  // treating it as the root resume id would replace the terminal's real session.
-  const providerSession =
-    source === 'codex' && readString(hookPayloadRecord, 'agent_id')
-      ? null
-      : extractAgentProviderSession(source, hookPayloadRecord)
   const providerSessionOnly =
     source === 'pi' && eventName === 'session_start' && providerSession !== null
   // Why: Pi session_start carries resume identity while idle; providerSessionOnly makes receivers discard the placeholder row.
@@ -4150,6 +4252,7 @@ export function normalizeHookPayload(
   return transportPayload
     ? {
         paneKey,
+        source,
         launchToken,
         tabId,
         worktreeId,
@@ -4168,6 +4271,8 @@ export function normalizeHookPayload(
               ),
         promptInteractionKey,
         hookEventName: typeof eventName === 'string' ? eventName : undefined,
+        providerPromptId,
+        compactTrigger,
         toolUseId: readFirstString(hookPayloadRecord, ['tool_use_id', 'toolUseId']),
         toolAgentId: readFirstString(hookPayloadRecord, ['agent_id', 'agentId']),
         toolAgentType: readString(hookPayloadRecord, 'agent_type'),

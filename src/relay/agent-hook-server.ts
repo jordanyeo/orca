@@ -275,7 +275,9 @@ export class RelayAgentHookServer {
         res.end()
         return
       }
-      const event = normalizeHookPayload(this.state, source, body, this.env)
+      const event = normalizeHookPayload(this.state, source, body, this.env, {
+        allowUnanchoredManualPreCompact: true
+      })
       if (event) {
         // TODO: once normalizeHookPayload returns validated env/version, drop bodyEnv/bodyVersion and source them from the listener result.
         const env = this.bodyEnv(body)
@@ -313,6 +315,8 @@ export class RelayAgentHookServer {
       hasExplicitPrompt: event.hasExplicitPrompt,
       promptInteractionKey: event.promptInteractionKey,
       hookEventName: event.hookEventName,
+      providerPromptId: event.providerPromptId,
+      compactTrigger: event.compactTrigger,
       toolUseId: event.toolUseId,
       toolAgentId: event.toolAgentId,
       toolAgentType: event.toolAgentType,

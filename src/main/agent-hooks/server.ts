@@ -22,6 +22,8 @@ import {
   markCodexLeadTurnInterrupted,
   MAX_PANE_KEY_LEN,
   movePaneCacheState,
+  canAcceptManualClaudeCompactTransition,
+  normalizeClaudePromptId,
   normalizeHookPayload,
   parseFormEncodedBody,
   readRequestBody,
@@ -41,7 +43,11 @@ import {
   claudeRosterHasWorkingSubagent,
   claudeRosterToSnapshots
 } from '../../shared/claude-subagent-roster'
-import { restoreShedStatusFields, type AgentHookSource } from '../../shared/agent-hook-relay'
+import {
+  isAgentHookSource,
+  restoreShedStatusFields,
+  type AgentHookSource
+} from '../../shared/agent-hook-relay'
 import {
   CLAUDE_STATUSLINE_PATHNAME,
   parseClaudeStatusLineBody,
@@ -291,13 +297,21 @@ function sanitizeHydratedEntry(
   if (providerSessionOnly && !isValidPiProviderSessionOnly(providerSession, payload.agentType)) {
     return null
   }
+  const source = isAgentHookSource(record.source) ? record.source : undefined
+  const providerPromptId =
+    source === 'claude' ? normalizeClaudePromptId(record.providerPromptId) : undefined
+  const compactTrigger =
+    source === 'claude' && record.compactTrigger === 'manual' ? ('manual' as const) : undefined
   return {
     paneKey,
+    source,
     tabId: typeof tabId === 'string' ? tabId : undefined,
     worktreeId: typeof worktreeId === 'string' ? worktreeId : undefined,
     connectionId,
     hasExplicitPrompt: record.hasExplicitPrompt === true ? true : undefined,
     hookEventName: typeof record.hookEventName === 'string' ? record.hookEventName : undefined,
+    providerPromptId,
+    compactTrigger,
     toolUseId: typeof record.toolUseId === 'string' ? record.toolUseId : undefined,
     toolAgentId: typeof record.toolAgentId === 'string' ? record.toolAgentId : undefined,
     toolAgentType: typeof record.toolAgentType === 'string' ? record.toolAgentType : undefined,
@@ -1788,6 +1802,9 @@ export class AgentHookServer {
       hasExplicitPrompt?: boolean
       promptInteractionKey?: string
       hookEventName?: string
+      source?: unknown
+      providerPromptId?: unknown
+      compactTrigger?: unknown
       toolUseId?: string
       toolAgentId?: string
       toolAgentType?: string
@@ -1849,6 +1866,11 @@ export class AgentHookServer {
       typeof envelope.hookEventName === 'string' && envelope.hookEventName.trim().length > 0
         ? envelope.hookEventName.trim()
         : undefined
+    const source = isAgentHookSource(envelope.source) ? envelope.source : undefined
+    const providerPromptId =
+      source === 'claude' ? normalizeClaudePromptId(envelope.providerPromptId) : undefined
+    const compactTrigger =
+      source === 'claude' && envelope.compactTrigger === 'manual' ? ('manual' as const) : undefined
     const statusDisposition = this.getAgentStatusDisposition(paneKey, {
       hookEventName,
       isReplay: envelope.isReplay === true
@@ -1884,11 +1906,52 @@ export class AgentHookServer {
       return
     }
     // Why: restore a shed roster only when its digest and turn identity still match the cache.
-    const normalizedPayload = restoreShedStatusFields(
+    let normalizedPayload = restoreShedStatusFields(
       validatedPayload,
       envelope.shedFields,
       this.state.lastStatusByPaneKey.get(paneKey)?.payload
     )
+    const previousStatus = this.state.lastStatusByPaneKey.get(paneKey)
+    if (hookEventName === 'PreCompact' || hookEventName === 'PostCompact') {
+      if (source === undefined || normalizedPayload.agentType !== source) {
+        return
+      }
+      if (hookEventName === 'PostCompact' && source !== 'claude') {
+        return
+      }
+      if (
+        hookEventName === 'PreCompact' &&
+        compactTrigger === 'manual' &&
+        envelope.isReplay === true &&
+        (previousStatus?.hookEventName !== 'PreCompact' ||
+          previousStatus.compactTrigger !== 'manual' ||
+          previousStatus.providerPromptId !== providerPromptId)
+      ) {
+        return
+      }
+      if (
+        source === 'claude' &&
+        (hookEventName === 'PostCompact' || compactTrigger === 'manual') &&
+        !canAcceptManualClaudeCompactTransition(previousStatus, {
+          source,
+          connectionId: trimmedConnectionId,
+          hookEventName,
+          providerPromptId,
+          compactTrigger,
+          providerSession
+        })
+      ) {
+        return
+      }
+    }
+    if (
+      source === 'claude' &&
+      compactTrigger === 'manual' &&
+      normalizedPayload.prompt.length === 0 &&
+      previousStatus?.payload.prompt
+    ) {
+      normalizedPayload = { ...normalizedPayload, prompt: previousStatus.payload.prompt }
+    }
     if (
       envelope.providerSessionOnly === true &&
       !isValidPiProviderSessionOnly(providerSession, normalizedPayload.agentType)
@@ -1908,6 +1971,7 @@ export class AgentHookServer {
     })
     const event: AgentHookEventPayload = {
       paneKey,
+      source,
       launchToken: statusDisposition === 'restart' ? undefined : envelope.launchToken,
       tabId,
       worktreeId,
@@ -1915,6 +1979,8 @@ export class AgentHookServer {
       hasExplicitPrompt: envelope.hasExplicitPrompt === true ? true : undefined,
       promptInteractionKey,
       hookEventName,
+      providerPromptId,
+      compactTrigger,
       toolUseId,
       toolAgentId,
       toolAgentType,

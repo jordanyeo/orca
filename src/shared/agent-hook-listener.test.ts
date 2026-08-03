@@ -32,6 +32,20 @@ import { makePaneKey } from './stable-pane-id'
 
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const PANE_KEY = makePaneKey('tab-1', LEAF_ID)
+const CLAUDE_PROMPT_ID = '22222222-2222-4222-8222-222222222222'
+const CLAUDE_PREVIOUS_PROMPT_ID = '33333333-3333-4333-8333-333333333333'
+
+function normalizeAndAccept(
+  state: HookListenerState,
+  source: Parameters<typeof normalizeHookPayload>[1],
+  payload: Record<string, unknown>
+): ReturnType<typeof normalizeHookPayload> {
+  const event = normalizeHookPayload(state, source, { paneKey: PANE_KEY, payload }, 'production')
+  if (event) {
+    state.lastStatusByPaneKey.set(PANE_KEY, event)
+  }
+  return event
+}
 
 type FakeIncomingMessage = EventEmitter & {
   headers: IncomingHttpHeaders
@@ -1500,26 +1514,21 @@ describe('shared agent-hook-listener', () => {
     expect(tool!.payload.agentType).toBe('kimi')
   })
 
-  it('maps Kimi PreCompact to working and PostCompact to done (issue #11352)', () => {
-    const pre = normalizeHookPayload(
-      state,
-      'kimi',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'PreCompact', trigger: 'manual' } },
-      'production'
-    )
+  it('maps Kimi PreCompact to working and ignores uncorrelated PostCompact', () => {
+    const pre = normalizeAndAccept(state, 'kimi', {
+      hook_event_name: 'PreCompact',
+      trigger: 'manual'
+    })
     expect(pre).not.toBeNull()
     expect(pre!.payload.state).toBe('working')
     expect(pre!.payload.agentType).toBe('kimi')
 
-    const post = normalizeHookPayload(
-      state,
-      'kimi',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
-      'production'
-    )
-    expect(post).not.toBeNull()
-    expect(post!.payload.state).toBe('done')
-    expect(post!.payload.agentType).toBe('kimi')
+    const post = normalizeAndAccept(state, 'kimi', {
+      hook_event_name: 'PostCompact',
+      trigger: 'manual'
+    })
+    expect(post).toBeNull()
+    expect(state.lastStatusByPaneKey.get(PANE_KEY)).toBe(pre)
   })
 
   it('normalizes MiMo Code OpenCode-compatible lifecycle events as mimo-code status', () => {
@@ -1709,45 +1718,56 @@ describe('shared agent-hook-listener', () => {
     expect(event).toBeNull()
   })
 
-  it('maps Claude PreCompact to working and PostCompact to done (issue #11352)', () => {
-    const pre = normalizeHookPayload(
-      state,
-      'claude',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'PreCompact', trigger: 'manual' } },
-      'production'
-    )
+  it('maps an identity-matched Claude manual compact lifecycle', () => {
+    normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'work before compact',
+      prompt_id: CLAUDE_PREVIOUS_PROMPT_ID,
+      session_id: 'session-a'
+    })
+    const pre = normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'PreCompact',
+      trigger: 'manual',
+      prompt_id: CLAUDE_PROMPT_ID,
+      session_id: 'session-a'
+    })
     expect(pre).not.toBeNull()
     expect(pre!.payload.state).toBe('working')
     expect(pre!.payload.agentType).toBe('claude')
 
-    const post = normalizeHookPayload(
-      state,
-      'claude',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
-      'production'
-    )
+    const post = normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'PostCompact',
+      trigger: 'manual',
+      prompt_id: CLAUDE_PROMPT_ID,
+      session_id: 'session-a'
+    })
     expect(post).not.toBeNull()
     expect(post!.payload.state).toBe('done')
     expect(post!.payload.agentType).toBe('claude')
   })
 
-  it('clears a sticky working row when Claude PostCompact fires after a real turn', () => {
-    normalizeHookPayload(
-      state,
-      'claude',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'UserPromptSubmit', prompt: '/compact' } },
-      'production'
-    )
-    const post = normalizeHookPayload(
-      state,
-      'claude',
-      { paneKey: PANE_KEY, payload: { hook_event_name: 'PostCompact', trigger: 'manual' } },
-      'production'
-    )
+  it('keeps the preceding user prompt on the completed compact row', () => {
+    normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'work before compact',
+      prompt_id: CLAUDE_PREVIOUS_PROMPT_ID,
+      session_id: 'session-a'
+    })
+    normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'PreCompact',
+      trigger: 'manual',
+      prompt_id: CLAUDE_PROMPT_ID,
+      session_id: 'session-a'
+    })
+    const post = normalizeAndAccept(state, 'claude', {
+      hook_event_name: 'PostCompact',
+      trigger: 'manual',
+      prompt_id: CLAUDE_PROMPT_ID,
+      session_id: 'session-a'
+    })
     expect(post).not.toBeNull()
     expect(post!.payload.state).toBe('done')
-    // Why: slash-command prompt is a real user turn; keep it on the done row for history.
-    expect(post!.payload.prompt).toBe('/compact')
+    expect(post!.payload.prompt).toBe('work before compact')
   })
 
   it('treats a custom-element paste as an explicit user turn, not machinery', () => {
