@@ -1,0 +1,77 @@
+/**
+ * Dev-only canary for `useTerminalKeyboardShortcuts` effect churn.
+ *
+ * That effect owns 7 capture-phase window listeners plus the tab's IME chord
+ * state, so every re-run tears them down and drops in-flight chord bookkeeping.
+ * Its ~28 deps make it cheap for a later change to pass one value that is
+ * rebuilt every render (STA-3291), and nothing about that fails visibly — the
+ * pane just re-registers forever. Warn instead of staying silent.
+ */
+
+const CHURN_WINDOW_MS = 2_000
+const CHURN_THRESHOLD = 4
+const WARN_COOLDOWN_MS = 5_000
+
+type RegistrationHistory = {
+  timestamps: number[]
+  lastWarnedAt: number
+}
+
+const historyByInstance = new Map<string, RegistrationHistory>()
+let nextInstanceSerial = 0
+
+/** Scopes churn to one mounted hook so remounting a tab never reads as churn. */
+export function createKeyboardEffectInstanceId(): string {
+  nextInstanceSerial += 1
+  return `keyboard-effect-${nextInstanceSerial}`
+}
+
+export function recordKeyboardEffectRegistration(
+  tabId: string,
+  instanceId: string,
+  now: number = performance.now()
+): void {
+  const history = pruneExpiredHistories(now, `${tabId}\u0000${instanceId}`)
+  history.timestamps.push(now)
+  if (
+    history.timestamps.length <= CHURN_THRESHOLD ||
+    now - history.lastWarnedAt < WARN_COOLDOWN_MS
+  ) {
+    return
+  }
+  history.lastWarnedAt = now
+  console.warn(
+    `[terminal] keyboard shortcut effect re-registered ${history.timestamps.length} times in ` +
+      `${CHURN_WINDOW_MS}ms for tab ${tabId}: a useTerminalKeyboardShortcuts dependency is changing ` +
+      `identity across renders. Every pass re-registers 7 window listeners and resets IME chord state.`
+  )
+}
+
+export function resetKeyboardEffectChurnCanaryForTesting(): void {
+  historyByInstance.clear()
+  nextInstanceSerial = 0
+}
+
+export function getKeyboardEffectChurnCanarySizeForTesting(): number {
+  return historyByInstance.size
+}
+
+function pruneExpiredHistories(now: number, activeKey: string): RegistrationHistory {
+  const cutoff = now - CHURN_WINDOW_MS
+  for (const [key, history] of historyByInstance) {
+    history.timestamps = history.timestamps.filter((at) => at > cutoff)
+    // Why: retaining an idle-but-recently-warned key is what rate-limits it.
+    const retired =
+      history.timestamps.length === 0 && now - history.lastWarnedAt >= WARN_COOLDOWN_MS
+    if (key !== activeKey && retired) {
+      historyByInstance.delete(key)
+    }
+  }
+  const existing = historyByInstance.get(activeKey)
+  if (existing) {
+    return existing
+  }
+  const created: RegistrationHistory = { timestamps: [], lastWarnedAt: Number.NEGATIVE_INFINITY }
+  historyByInstance.set(activeKey, created)
+  return created
+}
