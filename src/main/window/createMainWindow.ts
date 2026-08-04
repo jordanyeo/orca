@@ -30,6 +30,7 @@ import {
 import { installMainWindowWebviewSecurity } from './main-window-webview-security'
 import { rectHasVisibleAreaOnAnyDisplay } from './window-bounds-validation'
 import { installWindowsPathRegistryChangeListener } from '../pty/windows-path-registry-change'
+import { installWorkspaceWindowMetadataListener } from './workspace-window-metadata'
 
 export { WINDOW_QUIT_RENDERER_ACK_TIMEOUT_MS }
 
@@ -81,6 +82,7 @@ export function createMainWindow(
   // forced per-frame WindowServer alpha compositing (#8482). Applies at creation only, so it needs a restart.
   const platformBlurOptions =
     blur && process.platform === 'win32' ? { backgroundMaterial: 'acrylic' as const } : {}
+  const baseWindowTitle = opts?.title ?? 'Orca'
 
   const mainWindow = new BrowserWindow({
     width: savedBounds?.width ?? defaultBounds.width,
@@ -88,7 +90,7 @@ export function createMainWindow(
     ...(savedBounds ? { x: savedBounds.x, y: savedBounds.y } : {}),
     minWidth: MIN_WIDTH,
     minHeight: MIN_HEIGHT,
-    title: opts?.title ?? 'Orca',
+    title: baseWindowTitle,
     show: false,
     // Why: macOS swallows the app-activating click by default, so clicking back into Orca needed a second click (Windows/Linux already deliver it).
     acceptFirstMouse: true,
@@ -127,6 +129,10 @@ export function createMainWindow(
   })
   const rendererWebContentsId = mainWindow.webContents.id
   installWindowsPathRegistryChangeListener(mainWindow)
+  const disposeWorkspaceWindowMetadata = installWorkspaceWindowMetadataListener(
+    mainWindow,
+    baseWindowTitle
+  )
   // Why: native paste fallback is privileged IPC; only the top-level renderer may request it.
   setTrustedUIRendererWebContentsId(rendererWebContentsId)
 
@@ -193,6 +199,7 @@ export function createMainWindow(
     browserManager.setDictationShortcutForwardingPredicate(null)
     powerMonitor.removeListener('resume', onSystemResume)
     clearTrustedUIRendererWebContentsId(rendererWebContentsId)
+    disposeWorkspaceWindowMetadata()
     state.dispose()
   })
 
