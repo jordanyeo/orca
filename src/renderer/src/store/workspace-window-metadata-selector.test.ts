@@ -93,7 +93,7 @@ describe('selectWorkspaceWindowMetadata', () => {
           getKnownWorktreeById: vi.fn(() => ({
             displayName: 'remote-task',
             repoId: 'repo-1',
-            hostId: 'ssh:nested-host',
+            hostId: 'ssh:nested-host' as const,
             runtimeOwnerEnvironmentId: 'paired-host',
             path: '/srv/orca/remote-task'
           }))

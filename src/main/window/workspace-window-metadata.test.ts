@@ -19,7 +19,7 @@ import {
 } from './workspace-window-metadata'
 
 function createWindow(): {
-  window: Electron.BrowserWindow
+  window: Parameters<typeof installWorkspaceWindowMetadataListener>[0]
   setRepresentedFilename: ReturnType<typeof vi.fn>
   setTitle: ReturnType<typeof vi.fn>
 } {
@@ -31,7 +31,7 @@ function createWindow(): {
       isDestroyed: vi.fn(() => false),
       setRepresentedFilename,
       setTitle
-    } as unknown as Electron.BrowserWindow,
+    },
     setRepresentedFilename,
     setTitle
   }

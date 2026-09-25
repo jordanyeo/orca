@@ -8,6 +8,11 @@ import {
 const MAX_WORKSPACE_DISPLAY_NAME_LENGTH = 512
 const MAX_REPRESENTED_PATH_LENGTH = 32_768
 
+type WorkspaceMetadataWindow = Pick<
+  BrowserWindow,
+  'isDestroyed' | 'setRepresentedFilename' | 'setTitle'
+> & { webContents: Pick<BrowserWindow['webContents'], 'id'> }
+
 function normalizeDisplayName(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null
@@ -33,16 +38,15 @@ export function normalizeWorkspaceWindowMetadata(value: unknown): WorkspaceWindo
   if (!value || typeof value !== 'object') {
     return { displayName: null, repoName: null, localPath: null }
   }
-  const candidate = value as Record<string, unknown>
   return {
-    displayName: normalizeDisplayName(candidate.displayName),
-    repoName: normalizeDisplayName(candidate.repoName),
-    localPath: normalizeLocalPath(candidate.localPath)
+    displayName: normalizeDisplayName('displayName' in value ? value.displayName : null),
+    repoName: normalizeDisplayName('repoName' in value ? value.repoName : null),
+    localPath: normalizeLocalPath('localPath' in value ? value.localPath : null)
   }
 }
 
 export function installWorkspaceWindowMetadataListener(
-  window: BrowserWindow,
+  window: WorkspaceMetadataWindow,
   baseWindowTitle: string,
   platform: NodeJS.Platform = process.platform
 ): () => void {
