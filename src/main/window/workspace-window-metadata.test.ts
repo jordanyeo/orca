@@ -58,10 +58,10 @@ describe('workspace window metadata', () => {
 
     listener(
       { sender: { id: 42 } },
-      { displayName: 'stevie-vs-orca', localPath: '/tmp/orca/worktree' }
+      { displayName: 'stevie-vs-orca', repoName: 'orca', localPath: '/tmp/orca/worktree' }
     )
     expect(setRepresentedFilename).toHaveBeenLastCalledWith('/tmp/orca/worktree')
-    expect(setTitle).toHaveBeenLastCalledWith('stevie-vs-orca — Orca: local-dev')
+    expect(setTitle).toHaveBeenLastCalledWith('stevie-vs-orca — orca — Orca: local-dev')
 
     listener({ sender: { id: 42 } }, { displayName: null, localPath: null })
     expect(setRepresentedFilename).toHaveBeenLastCalledWith('')
@@ -72,6 +72,27 @@ describe('workspace window metadata', () => {
       WORKSPACE_WINDOW_METADATA_CHANNEL,
       listener
     )
+  })
+
+  it.each([
+    { displayName: 'main', repoName: 'orca', title: 'main — orca — Orca' },
+    { displayName: 'orca', repoName: 'orca', title: 'orca — Orca' },
+    { displayName: 'Notes', repoName: undefined, title: 'Notes — Orca' },
+    {
+      displayName: 'remote-task',
+      repoName: 'remote-repo',
+      title: 'remote-task — remote-repo — Orca'
+    },
+    { displayName: null, repoName: 'orca', title: 'Orca' }
+  ])('formats the window title as $title', ({ displayName, repoName, title }) => {
+    const { window, setTitle, setRepresentedFilename } = createWindow()
+    installWorkspaceWindowMetadataListener(window, 'Orca', 'darwin')
+    const listener = ipcMainOnMock.mock.calls[0]?.[1]
+
+    listener({ sender: { id: 42 } }, { displayName, repoName, localPath: null })
+
+    expect(setTitle).toHaveBeenLastCalledWith(title)
+    expect(setRepresentedFilename).toHaveBeenLastCalledWith('')
   })
 
   it('does not install native metadata handling on other platforms', () => {
@@ -87,20 +108,34 @@ describe('workspace window metadata', () => {
     expect(
       normalizeWorkspaceWindowMetadata({
         displayName: '  workspace  ',
+        repoName: '  repo  ',
         localPath: '/Users/example/workspace'
       })
-    ).toEqual({ displayName: 'workspace', localPath: '/Users/example/workspace' })
+    ).toEqual({ displayName: 'workspace', repoName: 'repo', localPath: '/Users/example/workspace' })
     expect(
       normalizeWorkspaceWindowMetadata({ displayName: '', localPath: 'relative/workspace' })
-    ).toEqual({ displayName: null, localPath: null })
+    ).toEqual({ displayName: null, repoName: null, localPath: null })
     expect(
       normalizeWorkspaceWindowMetadata({ displayName: 42, localPath: '/tmp/bad\0path' })
-    ).toEqual({ displayName: null, localPath: null })
+    ).toEqual({ displayName: null, repoName: null, localPath: null })
     expect(
       normalizeWorkspaceWindowMetadata({
         displayName: 'x'.repeat(513),
         localPath: `/${'x'.repeat(32_768)}`
       })
-    ).toEqual({ displayName: null, localPath: null })
+    ).toEqual({ displayName: null, repoName: null, localPath: null })
   })
+
+  it.each([undefined, null, '', 42, 'x'.repeat(513)])(
+    'ignores missing or invalid repository names without losing workspace metadata',
+    (repoName) => {
+      expect(
+        normalizeWorkspaceWindowMetadata({
+          displayName: 'workspace',
+          repoName,
+          localPath: '/tmp/workspace'
+        })
+      ).toEqual({ displayName: 'workspace', repoName: null, localPath: '/tmp/workspace' })
+    }
+  )
 })

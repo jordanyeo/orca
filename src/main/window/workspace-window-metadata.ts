@@ -31,11 +31,12 @@ function normalizeLocalPath(value: unknown): string | null {
 
 export function normalizeWorkspaceWindowMetadata(value: unknown): WorkspaceWindowMetadata {
   if (!value || typeof value !== 'object') {
-    return { displayName: null, localPath: null }
+    return { displayName: null, repoName: null, localPath: null }
   }
   const candidate = value as Record<string, unknown>
   return {
     displayName: normalizeDisplayName(candidate.displayName),
+    repoName: normalizeDisplayName(candidate.repoName),
     localPath: normalizeLocalPath(candidate.localPath)
   }
 }
@@ -58,9 +59,11 @@ export function installWorkspaceWindowMetadataListener(
     // Why: representedFilename becomes macOS AXDocument, while the title gives
     // time trackers a useful fallback without making remote paths look local.
     window.setRepresentedFilename(metadata.localPath ?? '')
-    window.setTitle(
-      metadata.displayName ? `${metadata.displayName} — ${baseWindowTitle}` : baseWindowTitle
-    )
+    const titleParts = metadata.displayName ? [metadata.displayName] : []
+    if (metadata.displayName && metadata.repoName && metadata.repoName !== metadata.displayName) {
+      titleParts.push(metadata.repoName)
+    }
+    window.setTitle([...titleParts, baseWindowTitle].join(' — '))
   }
 
   ipcMain.on(WORKSPACE_WINDOW_METADATA_CHANNEL, onWorkspaceWindowMetadata)
