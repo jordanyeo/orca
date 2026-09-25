@@ -36,6 +36,7 @@ type CurrentRef<T> = { readonly current: T }
 type ShowToast = (message: string, durationMs?: number) => void
 
 type Args = {
+  readonly agent?: string | null
   readonly client: RpcClient | null
   readonly activeHandleRef: CurrentRef<string | null>
   readonly deviceTokenRef: CurrentRef<string | null>
@@ -91,6 +92,7 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 export function useMobileNativeChatImageAttachments({
   client,
+  agent,
   activeHandleRef,
   deviceTokenRef,
   getActiveWorktreeConnectionId,
@@ -238,8 +240,10 @@ export function useMobileNativeChatImageAttachments({
           const pasted = await pasteMobileNativeChatImagePaths({
             client,
             terminal: handle,
+            agent,
             deviceToken: deviceTokenRef.current,
             imagePaths: pendingImages.map((attachment) => attachment.path),
+            followedByText: text.trim().length > 0,
             deadline,
             ...(seededLaunchDraft
               ? { clearInput: buildAgentTuiClearInputForText(seededLaunchDraft) }
@@ -316,6 +320,7 @@ export function useMobileNativeChatImageAttachments({
       baseSend,
       client,
       connState,
+      agent,
       deviceTokenRef,
       enabled,
       onError,

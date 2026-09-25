@@ -83,7 +83,13 @@ export function createActivityThreadActions({
     // state of an SSH session that was never revived — has no resident tab until
     // resumeSleepingAgentSessionsForWorktree/ensureWorktreeHasInitialTerminal run inside here.
     // Probing tab residency first is what made a remote row click a silent no-op (#16731).
-    if (activateAndRevealWorkspace(thread.worktree.id, { executionHostId }) === false) {
+    if (
+      activateAndRevealWorkspace(thread.worktree.id, {
+        executionHostId,
+        revealInSidebar: false,
+        clearSidebarFilters: false
+      }) === false
+    ) {
       return
     }
     if (
@@ -99,7 +105,7 @@ export function createActivityThreadActions({
       // no pane to focus and focusing a sibling would be worse than focusing nothing.
       return
     }
-    activated.setActiveTabType('terminal')
+    activated.setActiveTabType('terminal', thread.worktree.id)
     const parsed = parsePaneKey(thread.paneKey)
     activateTabAndFocusPane(
       thread.tab.id,
